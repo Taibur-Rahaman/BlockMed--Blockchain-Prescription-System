@@ -4,34 +4,23 @@ import { DEV_RPC_URL, isPublicDeployment } from './config'
 // ============================================
 // BlockMed Dev Mode - LOCAL DEVELOPMENT ONLY
 // ============================================
-// Dev Mode connects to a trusted local Hardhat node. It deliberately
-// does NOT contain or persist private keys in the frontend bundle.
-// Hardhat exposes its local accounts through eth_accounts and signs
-// transactions for those unlocked development accounts.
-//
-// IMPORTANT: Never expose a Hardhat RPC endpoint to an untrusted network.
-// Never use Hardhat development accounts on a production/public chain.
+// IMPORTANT: This file intentionally contains NO private keys.
+// Hardhat owns the development keys and signs transactions through its
+// trusted local JSON-RPC endpoint. Never expose that endpoint publicly.
+
+// Public Hardhat development addresses are safe to display in the UI.
+// The corresponding private keys remain inside the Hardhat node.
+export const DEV_ACCOUNTS = [
+  { address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', name: 'Admin (Account #0)', role: 'ADMIN' },
+  { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', name: 'Doctor (Account #1)', role: 'DOCTOR' },
+  { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', name: 'Pharmacist (Account #2)', role: 'PHARMACIST' },
+  { address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', name: 'Manufacturer (Account #3)', role: 'MANUFACTURER' },
+  { address: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', name: 'Patient (Account #4)', role: 'PATIENT' },
+  { address: '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc', name: 'Regulator (Account #5)', role: 'REGULATOR' },
+]
 
 const DEV_MODE_KEY = 'blockmed-dev-mode'
 const DEV_ACCOUNT_KEY = 'blockmed-dev-account'
-
-const ACCOUNT_ROLES = [
-  'ADMIN',
-  'DOCTOR',
-  'PHARMACIST',
-  'MANUFACTURER',
-  'PATIENT',
-  'REGULATOR',
-]
-
-const ACCOUNT_NAMES = [
-  'Admin (Account #0)',
-  'Doctor (Account #1)',
-  'Pharmacist (Account #2)',
-  'Manufacturer (Account #3)',
-  'Patient (Account #4)',
-  'Regulator (Account #5)',
-]
 
 let devModeEnabled = false
 let currentDevAccount = null
@@ -44,39 +33,24 @@ function assertLocalDevelopment() {
   }
 }
 
-/**
- * Get accounts exposed by the local Hardhat JSON-RPC node.
- * The node owns the private keys; the browser never receives them.
- */
-async function getHardhatAccounts(provider) {
-  const accounts = await provider.send('eth_accounts', [])
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    throw new Error('No Hardhat accounts available. Start: npm run blockchain')
-  }
-  return accounts
-}
-
-/**
- * Build the account list shown by the Dev Mode selector.
- * Only public addresses are returned; no private key is exposed.
- */
+/** Return accounts exposed by the local Hardhat node without exposing keys. */
 export async function getDevAccounts() {
   assertLocalDevelopment()
   const provider = getDevProvider()
-  const accounts = await getHardhatAccounts(provider)
+  const accounts = await provider.send('eth_accounts', [])
 
   return accounts.map((address, index) => ({
-    address,
-    name: ACCOUNT_NAMES[index] || `Hardhat Account #${index}`,
-    role: ACCOUNT_ROLES[index] || 'UNKNOWN',
+    address: ethers.getAddress(address),
+    name: DEV_ACCOUNTS[index]?.name || `Hardhat Account #${index}`,
+    role: DEV_ACCOUNTS[index]?.role || 'UNKNOWN',
   }))
 }
 
 /**
- * Initialize Dev Mode from localStorage.
- * localStorage stores only the selected account index, never credentials.
+ * Restore the local development selection.
+ * Only the account index is persisted. No credential is persisted.
  */
-export async function initDevMode() {
+export function initDevMode() {
   try {
     if (isPublicDeployment()) {
       disableDevMode()
@@ -84,49 +58,40 @@ export async function initDevMode() {
     }
 
     const stored = localStorage.getItem(DEV_MODE_KEY)
-    const storedAccount = localStorage.getItem(DEV_ACCOUNT_KEY)
+    const storedAccount = Number.parseInt(localStorage.getItem(DEV_ACCOUNT_KEY) || '0', 10)
 
-    if (stored === 'true') {
-      const accountIndex = Number.parseInt(storedAccount, 10)
-      if (!Number.isInteger(accountIndex) || accountIndex < 0) {
-        disableDevMode()
-        return false
-      }
-
-      devModeEnabled = true
-      const accounts = await getDevAccounts()
-      currentDevAccount = accounts[accountIndex] || accounts[0]
-
-      if (!currentDevAccount) {
-        disableDevMode()
-        return false
-      }
-
-      // Recreate a node-managed signer. No private key is loaded by the app.
-      devSigner = getDevProvider().getSigner(currentDevAccount.address)
-      console.log('🔧 Dev Mode initialized with:', currentDevAccount.name)
-      return true
+    if (stored !== 'true') return false
+    if (!Number.isInteger(storedAccount) || storedAccount < 0 || storedAccount >= DEV_ACCOUNTS.length) {
+      disableDevMode()
+      return false
     }
-  } catch (e) {
-    console.warn('Could not initialize Dev Mode:', e?.message || e)
+
+    devProvider = new ethers.JsonRpcProvider(DEV_RPC_URL)
+    currentDevAccount = DEV_ACCOUNTS[storedAccount]
+    devModeEnabled = true
+    // JsonRpcSigner delegates signing to the trusted local Hardhat node.
+    devSigner = devProvider.getSigner(currentDevAccount.address)
+
+    console.log('🔧 Dev Mode initialized with:', currentDevAccount.name)
+    return true
+  } catch (error) {
+    console.warn('Could not initialize Dev Mode:', error?.message || error)
     disableDevMode()
+    return false
   }
-  return false
 }
 
 export function isDevMode() {
   return devModeEnabled
 }
 
-/**
- * Enable local Dev Mode with a Hardhat account.
- */
+/** Enable local Dev Mode using a Hardhat node-managed account. */
 export async function enableDevMode(accountIndex = 0) {
   try {
     assertLocalDevelopment()
 
-    if (!Number.isInteger(accountIndex) || accountIndex < 0) {
-      throw new Error('Invalid Hardhat account index')
+    if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex >= DEV_ACCOUNTS.length) {
+      throw new Error(`Invalid account index. Must be between 0 and ${DEV_ACCOUNTS.length - 1}.`)
     }
 
     const connected = await testHardhatConnection()
@@ -137,42 +102,36 @@ export async function enableDevMode(accountIndex = 0) {
     devProvider = new ethers.JsonRpcProvider(DEV_RPC_URL)
     await devProvider.getBlockNumber()
 
-    const accounts = await getHardhatAccounts(devProvider)
-    if (accountIndex >= accounts.length) {
-      throw new Error(`Invalid account index. Hardhat exposed ${accounts.length} accounts.`)
+    // Verify that the expected public development account is actually exposed.
+    const accounts = await devProvider.send('eth_accounts', [])
+    const selected = accounts.find(
+      (address) => address.toLowerCase() === DEV_ACCOUNTS[accountIndex].address.toLowerCase()
+    )
+
+    if (!selected) {
+      throw new Error(
+        'Selected Hardhat account is not exposed by the local node. Restart Hardhat with its standard development accounts.'
+      )
     }
 
-    const address = ethers.getAddress(accounts[accountIndex])
     currentDevAccount = {
-      address,
-      name: ACCOUNT_NAMES[accountIndex] || `Hardhat Account #${accountIndex}`,
-      role: ACCOUNT_ROLES[accountIndex] || 'UNKNOWN',
+      ...DEV_ACCOUNTS[accountIndex],
+      address: ethers.getAddress(selected),
     }
 
-    // JsonRpcSigner asks the trusted local Hardhat node to sign/send.
-    // The private key remains inside Hardhat and is never bundled in JS.
-    devSigner = devProvider.getSigner(address)
+    // The private key stays inside Hardhat. The browser only receives a JSON-RPC signer.
+    devSigner = devProvider.getSigner(currentDevAccount.address)
     await devSigner.getAddress()
 
-    const balance = await devProvider.getBalance(address)
-    const balanceEth = parseFloat(ethers.formatEther(balance))
-    if (balanceEth < 0.01) {
-      console.warn('⚠️ Account has very low balance:', balanceEth, 'ETH')
-    }
-
+    const balance = await devProvider.getBalance(currentDevAccount.address)
     devModeEnabled = true
 
     try {
       localStorage.setItem(DEV_MODE_KEY, 'true')
       localStorage.setItem(DEV_ACCOUNT_KEY, String(accountIndex))
-    } catch (e) {
-      console.warn('Could not save Dev Mode settings:', e)
+    } catch (error) {
+      console.warn('Could not save Dev Mode settings:', error)
     }
-
-    console.log('✅ Dev Mode enabled')
-    console.log('📍 Account:', currentDevAccount.name)
-    console.log('💰 Address:', currentDevAccount.address)
-    console.log('💎 Balance:', ethers.formatEther(balance), 'ETH')
 
     return {
       success: true,
@@ -201,17 +160,13 @@ export function disableDevMode() {
   try {
     localStorage.removeItem(DEV_MODE_KEY)
     localStorage.removeItem(DEV_ACCOUNT_KEY)
-  } catch (e) {
-    console.warn('Could not clear Dev Mode settings:', e)
+  } catch (error) {
+    console.warn('Could not clear Dev Mode settings:', error)
   }
-
-  console.log('🔒 Dev Mode disabled')
 }
 
 export async function switchDevAccount(accountIndex) {
-  if (!devModeEnabled) {
-    throw new Error('Dev Mode is not enabled')
-  }
+  if (!devModeEnabled) throw new Error('Dev Mode is not enabled')
   return enableDevMode(accountIndex)
 }
 
@@ -221,7 +176,6 @@ export function getDevAccount() {
 
 export function getDevProvider() {
   assertLocalDevelopment()
-
   if (!devProvider) {
     devProvider = new ethers.JsonRpcProvider(DEV_RPC_URL)
   }
@@ -236,27 +190,17 @@ export function getDevSigner() {
 }
 
 export async function getSmartProvider() {
-  if (devModeEnabled) {
-    return getDevProvider()
-  }
-
-  if (window.ethereum) {
-    return new ethers.BrowserProvider(window.ethereum)
-  }
-
+  if (devModeEnabled) return getDevProvider()
+  if (window.ethereum) return new ethers.BrowserProvider(window.ethereum)
   throw new Error('No provider available')
 }
 
 export async function getSmartSigner() {
-  if (devModeEnabled) {
-    return getDevSigner()
-  }
-
+  if (devModeEnabled) return getDevSigner()
   if (window.ethereum) {
     const provider = new ethers.BrowserProvider(window.ethereum)
     return provider.getSigner()
   }
-
   throw new Error('No signer available')
 }
 
@@ -285,10 +229,8 @@ export async function testHardhatConnection() {
 
 export async function getDevBalance() {
   if (!devModeEnabled || !currentDevAccount) return null
-
   try {
-    const provider = getDevProvider()
-    const balance = await provider.getBalance(currentDevAccount.address)
+    const balance = await getDevProvider().getBalance(currentDevAccount.address)
     return ethers.formatEther(balance)
   } catch {
     return null
@@ -296,6 +238,7 @@ export async function getDevBalance() {
 }
 
 export default {
+  DEV_ACCOUNTS,
   getDevAccounts,
   initDevMode,
   isDevMode,
